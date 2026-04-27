@@ -17,23 +17,22 @@ function decodeProtocoloData(data: Buffer): { totalTransacciones: bigint; nombre
     const disc = data.slice(0, 8)
     const expectedDisc = Buffer.from([99, 237, 230, 83, 180, 95, 49, 77])
     if (!disc.equals(expectedDisc)) return null
-    
+
     let offset = 8 + 32 // discriminator + authority
-    
+
     const nombreLen = data.readUInt32LE(offset)
     offset += 4
     const nombre = data.slice(offset, offset + nombreLen).toString("utf8").replace(/\0/g, "")
     offset += nombreLen
-    
-    offset += 2 // fee_bps
-    offset += 6 // 6 bytes de padding para alinear a 8
-    
+
+    offset += 2 // fee_bps (Borsh no agrega padding entre campos)
+
     const totalVolume = data.readBigUInt64LE(offset)
     offset += 8
-    
-    const totalTransacciones = data.readBigUInt64LE(offset)
-    
-    return { totalTransacciones, nombre }
+
+      const totalTransacciones = data.readBigUInt64LE(offset) as bigint
+
+      return { totalTransacciones, nombre }
   } catch {
     return null
   }
@@ -61,9 +60,9 @@ const encStr = (s: string) => {
   return Buffer.concat([l, b])
 }
 
-const encU64 = (n: number) => {
+const u64ToBuffer = (n: bigint) => {
   const b = Buffer.alloc(8)
-  b.writeBigUInt64LE(BigInt(Math.floor(n)), 0)
+  b.writeBigUInt64LE(n, 0)
   return b
 }
 
@@ -81,12 +80,6 @@ const PROTOCOLO_PDA = PublicKey.findProgramAddressSync(
 const getEmpresaPDA = (owner: PublicKey) =>
   PublicKey.findProgramAddressSync(
     [Buffer.from("empresa"), owner.toBuffer()],
-    PROGRAM_ID
-  )[0]
-
-const getTxPDA = (pagador: PublicKey, nonce: number) =>
-  PublicKey.findProgramAddressSync(
-    [Buffer.from("tx"), pagador.toBuffer(), encU64(nonce)],
     PROGRAM_ID
   )[0]
 
@@ -140,7 +133,7 @@ export default function App() {
   const [empresa, setEmpresa] = useState<EmpresaLocal | null>(null)
   const [protocoloExiste, setProtocoloExiste] = useState(false)
   const [txs, setTxs] = useState<TxLocal[]>([])
-  const [txCount, setTxCount] = useState(0)
+  const [txCount, setTxCount] = useState<bigint>(0n)
   const [protocoloData, setProtocoloData] = useState<{ totalTxs: number } | null>(null)
 
   // Refresh empresa from chain
@@ -188,10 +181,9 @@ export default function App() {
       if (info && info.data && info.data.length > 0) {
         const decoded = decodeProtocoloData(info.data)
         if (decoded) {
-          const totalTransacciones = Number(decoded.totalTransacciones)
-          setProtocoloData({ totalTxs: totalTransacciones })
-          setTxCount(totalTransacciones)
-          console.log("Protocolo totalTransacciones:", totalTransacciones)
+          setTxCount(decoded.totalTransacciones)
+          setProtocoloData({ totalTxs: Number(decoded.totalTransacciones) })
+          console.log("Protocolo totalTransacciones:", Number(decoded.totalTransacciones))
         }
       }
     } catch (e) {
@@ -215,11 +207,10 @@ export default function App() {
         if (info && info.data && info.data.length > 0) {
           const decoded = decodeProtocoloData(info.data)
           if (decoded) {
-            const totalTransacciones = Number(decoded.totalTransacciones)
             console.log("Protocolo decoded:")
             console.log("- nombre:", decoded.nombre)
-            console.log("- totalTransacciones:", totalTransacciones)
-            setTxCount(totalTransacciones)
+            console.log("- totalTransacciones:", Number(decoded.totalTransacciones))
+            setTxCount(decoded.totalTransacciones)
             setProtocoloExiste(true)
           }
         }
@@ -303,18 +294,30 @@ export default function App() {
           preflightCommitment: "confirmed",
         })
 
-        // Esperar confirmación
-        await connection.confirmTransaction({
-          signature: lastSig,
-          blockhash,
-          lastValidBlockHeight,
-        }, "confirmed")
+        // Esperar confirmación con timeout para evitar UI colgada
+        const confirmPromise = connection.confirmTransaction(
+          {
+            signature: lastSig,
+            blockhash,
+            lastValidBlockHeight,
+          },
+          "confirmed"
+        )
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("Timeout confirmando transacción")), 25000)
+        })
+        await Promise.race([confirmPromise, timeoutPromise])
 
         return lastSig
       } catch (e: any) {
         lastError = e
         const errorMsg = e.message?.toString() || ""
         console.log("Error en intento", attempt + 1, ":", errorMsg)
+
+        // El usuario canceló la firma en la wallet: no reintentar
+        if (errorMsg.includes("User rejected")) {
+          throw new Error("Firma cancelada en wallet")
+        }
 
         // Si ya tenemos una firma, verificar si fue procesada
         if (lastSig) {
@@ -329,10 +332,15 @@ export default function App() {
           } catch {}
         }
 
+        // Error lógico de seeds: no reintentar aquí, lo maneja handlePago con otros PDA candidates
+        if (errorMsg.includes("ConstraintSeeds")) {
+          throw e
+        }
+
         // Error de blockhash - reintentar
         if (errorMsg.includes("Blockhash not found") ||
             errorMsg.includes("blockhash not found") ||
-            errorMsg.includes("Transaction simulation failed")) {
+            errorMsg.includes("block height exceeded")) {
           console.log(`Reintento ${attempt + 1}/${retries} por blockhash...`)
           await new Promise(r => setTimeout(r, 1500))
           continue
@@ -341,6 +349,7 @@ export default function App() {
         // Error de TX ya procesada
         if (errorMsg.includes("already been processed") || errorMsg.includes("already in flight")) {
           if (lastSig) return lastSig
+          throw new Error("Transacción ya procesada")
         }
 
         // Si es el último intento, lanzar error
@@ -457,7 +466,7 @@ export default function App() {
           { pubkey: empPDA, isSigner: false, isWritable: true },
           { pubkey: publicKey, isSigner: true, isWritable: true },
         ],
-        Buffer.concat([DISC.depositar, encU64(Math.floor(monto * 1_000_000))])
+        Buffer.concat([DISC.depositar, u64ToBuffer(BigInt(Math.floor(monto * 1_000_000)))])
       )
       toast("exito", `✓ ${monto} NEXUM depositados — ${sig.slice(0, 8)}...`)
       await new Promise(r => setTimeout(r, 2000))
@@ -539,25 +548,27 @@ export default function App() {
       const montoLamports = Math.floor(montoNum * 1_000_000)
 
       // Obtener txCount desde chain usando el decoder
+      let txCountBigInt = BigInt(txCount)
       const protoInfo = await connection.getAccountInfo(PROTOCOLO_PDA)
-      let realTxCount = txCount
       if (protoInfo && protoInfo.data) {
         const decoded = decodeProtocoloData(protoInfo.data)
         if (decoded) {
-          realTxCount = Number(decoded.totalTransacciones)
-          console.log("=== LOG PROTOCOLO ===")
-          console.log("nombre:", decoded.nombre)
-          console.log("totalTransacciones (bigint):", decoded.totalTransacciones.toString())
-          console.log("totalTransacciones (number):", realTxCount)
-          console.log("totalTransacciones LE bytes:", Buffer.from(decoded.totalTransacciones.toString(16).padStart(16, "0"), "hex").reverse().toString("hex"))
+          txCountBigInt = decoded.totalTransacciones
         }
       }
-      console.log("=== handlePago ===")
-      console.log("Destinatario PDA:", destPDA.toBase58())
-      console.log("TxPDA:", txPDA.toBase58())
-      console.log("txCount usado:", realTxCount)
-      console.log("Monto (NEXUM):", montoNum)
-      console.log("Monto (lamports):", montoLamports)
+      const deriveTxPda = (
+        seedPrefix: "tx" | "transaccion",
+        seedOwner: PublicKey,
+        nonce: bigint
+      ) => {
+        const buffer = Buffer.alloc(8)
+        buffer.writeBigUInt64LE(nonce, 0)
+        return PublicKey.findProgramAddressSync(
+          [Buffer.from(seedPrefix), seedOwner.toBuffer(), buffer],
+          PROGRAM_ID
+        )[0]
+      }
+
 
       // Log balance ANTES de la TX
       const infoAntes = await connection.getAccountInfo(origenPDA)
@@ -571,20 +582,53 @@ export default function App() {
         console.log("Balance ANTES:", balanceAntes)
       }
 
-      const sig = await sendIx(
-        [
-          { pubkey: PROTOCOLO_PDA, isSigner: false, isWritable: true },
-          { pubkey: origenPDA, isSigner: false, isWritable: true },
-          { pubkey: destPDA, isSigner: false, isWritable: true },
-          { pubkey: txPDA, isSigner: false, isWritable: true },
-          { pubkey: publicKey, isSigner: true, isWritable: true },
-          { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-        ],
-        Buffer.concat([
-          DISC.liquidarPago,
-          encU64(Math.floor(montoNum * 1_000_000)),
-        ])
+      const ixData = Buffer.concat([
+        DISC.liquidarPago,
+        u64ToBuffer(BigInt(Math.floor(montoNum * 1_000_000))),
+      ])
+      const expectedNonce = txCountBigInt + 1n
+      let txPDA = deriveTxPda("tx", publicKey, expectedNonce)
+      console.log(
+        "Intentando PDA transaccion con tx pagador nonce",
+        expectedNonce.toString(),
+        txPDA.toBase58()
       )
+
+      let sig = ""
+      try {
+        sig = await sendIx(
+          [
+            { pubkey: PROTOCOLO_PDA, isSigner: false, isWritable: true },
+            { pubkey: origenPDA, isSigner: false, isWritable: true },
+            { pubkey: destPDA, isSigner: false, isWritable: true },
+            { pubkey: txPDA, isSigner: false, isWritable: true },
+            { pubkey: publicKey, isSigner: true, isWritable: true },
+            { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+          ],
+          ixData
+        )
+      } catch (e: any) {
+        const msg = e?.message?.toString?.() || ""
+        if (!msg.includes("ConstraintSeeds")) throw e
+
+        // Si Anchor expone el PDA esperado en "Right:", lo usamos directamente.
+        const rightMatch = msg.match(/Program log: Right:[\s\S]*?Program log: ([1-9A-HJ-NP-Za-km-z]{32,44})/)
+        if (!rightMatch) throw e
+
+        txPDA = new PublicKey(rightMatch[1])
+        console.log("Reintentando con PDA esperado por programa:", txPDA.toBase58())
+        sig = await sendIx(
+          [
+            { pubkey: PROTOCOLO_PDA, isSigner: false, isWritable: true },
+            { pubkey: origenPDA, isSigner: false, isWritable: true },
+            { pubkey: destPDA, isSigner: false, isWritable: true },
+            { pubkey: txPDA, isSigner: false, isWritable: true },
+            { pubkey: publicKey, isSigner: true, isWritable: true },
+            { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+          ],
+          ixData
+        )
+      }
       setTxs((prev) => [
         {
           sig,
@@ -596,7 +640,7 @@ export default function App() {
         },
         ...prev,
       ])
-      setTxCount((c) => c + 1)
+      setTxCount((c) => c + 1n)
       toast("exito", `✓ ${montoNum} NEXUM liquidados — Fee: ${feeNum.toFixed(4)}`)
 
       // Esperar a que la cadena procese la actualización
@@ -604,9 +648,15 @@ export default function App() {
       await refreshEmpresa()
       setFPago({ dest: "", monto: "" })
     } catch (e: any) {
-      toast("error", e.message)
+      const msg = e?.message || "Error en liquidación"
+      if (msg.includes("Firma cancelada")) {
+        toast("info", msg)
+      } else {
+        toast("error", msg)
+      }
+    } finally {
+      setLoadingPago(false)
     }
-    setLoadingPago(false)
   }
 
 
