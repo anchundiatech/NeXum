@@ -1,11 +1,17 @@
 # 🚀 Nexum Pay
 
+![Rust](https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white)
+![Solana](https://img.shields.io/badge/Solana-9945FF?style=for-the-badge&logo=solana&logoColor=white)
+![Anchor](https://img.shields.io/badge/Anchor-2F2F2F?style=for-the-badge&logo=anchor&logoColor=white)
+![Nexum](https://img.shields.io/badge/Nexum-Pay-6C2BD9?style=for-the-badge&logo=web3.js&logoColor=white)
+
 > **Infraestructura de pagos on-chain para empresas sobre Solana.**  
 > Liquidaciones instantáneas, comisión automática y control total del flujo financiero.
 
 ---
 
 ## 🎯 ¿Qué es Nexum?
+<img width="1068" height="688" alt="image" src="https://github.com/user-attachments/assets/196df450-2b7d-4c2f-a0c4-bba9a4a695e3" />
 
 **Nexum** es un protocolo descentralizado que permite a empresas enviar y recibir pagos dentro de una red interna, gestionando balances, comisiones y transacciones completamente on-chain.
 Empresa A → Nexum → Empresa B
@@ -14,6 +20,13 @@ Empresa A → Nexum → Empresa B
 💡 Es como un **Stripe interno descentralizado**, pero enfocado en **liquidaciones entre empresas**.
 
 ---
+## Registro y deposito
+<img width="1110" height="685" alt="image" src="https://github.com/user-attachments/assets/3c7be538-bc75-4ca6-8079-b3319330fa43" />
+<img width="1207" height="676" alt="image" src="https://github.com/user-attachments/assets/e8d4e0ce-20e9-4b65-9218-c416c35a6fb8" />
+<img width="1205" height="690" alt="image" src="https://github.com/user-attachments/assets/f800513e-094b-4ef8-8a82-5da93fdd73ef" />
+
+
+
 
 ## ⚡ Características principales
 
